@@ -54,6 +54,10 @@ class Workflow(Base):
         back_populates="workflow", cascade="all, delete-orphan"
     )
 
+    @property
+    def latest_version(self) -> "WorkflowVersion | None":
+        return max(self.versions, key=lambda item: item.version, default=None)
+
 
 class WorkflowVersion(Base):
     __tablename__ = "workflow_versions"
@@ -88,6 +92,7 @@ class WorkflowStep(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     task_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
     input: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     depends_on: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 

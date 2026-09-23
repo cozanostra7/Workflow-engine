@@ -3,12 +3,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import engine
+from app.routes.workflows import router as workflows_router
 
 app = FastAPI(
     title="Workflow Engine API",
     description="Control plane for a distributed workflow engine.",
     version="0.1.0",
 )
+app.include_router(workflows_router)
 
 
 @app.get("/health", tags=["operations"])
