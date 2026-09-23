@@ -4,6 +4,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import engine
 from app.routes.workflows import router as workflows_router
+from app.routes.runs import runs_router, workflow_runs_router
 
 app = FastAPI(
     title="Workflow Engine API",
@@ -11,6 +12,8 @@ app = FastAPI(
     version="0.1.0",
 )
 app.include_router(workflows_router)
+app.include_router(workflow_runs_router)
+app.include_router(runs_router)
 
 
 @app.get("/health", tags=["operations"])

@@ -2,6 +2,7 @@ from datetime import datetime
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasPath
 
 
 class WorkflowStepCreate(BaseModel):
@@ -28,6 +29,7 @@ class WorkflowStepRead(BaseModel):
 class WorkflowVersionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    id: uuid.UUID
     version: int
     created_at: datetime
     steps: list[WorkflowStepRead]
@@ -40,3 +42,31 @@ class WorkflowRead(BaseModel):
     name: str
     created_at: datetime
     latest_version: WorkflowVersionRead
+
+
+class WorkflowRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    workflow_version_id: uuid.UUID
+    status: str
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class TaskRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    workflow_step_id: uuid.UUID
+    step_name: str = Field(validation_alias=AliasPath("workflow_step", "name"))
+    task_type: str = Field(validation_alias=AliasPath("workflow_step", "task_type"))
+    status: str
+    attempt: int
+    input: dict
+    output: dict | None
+    error: dict | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
