@@ -10,6 +10,8 @@ class WorkflowStepCreate(BaseModel):
     type: str = Field(min_length=1, max_length=100)
     input: dict = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
+    max_attempts: int = Field(default=1, ge=1, le=10)
+    retry_backoff_seconds: float = Field(default=0.5, ge=0.1, le=60)
 
 
 class WorkflowCreate(BaseModel):
@@ -24,6 +26,8 @@ class WorkflowStepRead(BaseModel):
     type: str = Field(validation_alias="task_type")
     input: dict
     depends_on: list[str]
+    max_attempts: int
+    retry_backoff_seconds: float
 
 
 class WorkflowVersionRead(BaseModel):
@@ -55,6 +59,18 @@ class WorkflowRunRead(BaseModel):
     finished_at: datetime | None
 
 
+class TaskAttemptRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    attempt_number: int
+    status: str
+    worker_id: str
+    started_at: datetime
+    finished_at: datetime | None
+    output: dict | None
+    error: dict | None
+
+
 class TaskRunRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,3 +86,7 @@ class TaskRunRead(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    worker_id: str | None
+    last_heartbeat_at: datetime | None
+    lease_expires_at: datetime | None
+    attempts: list[TaskAttemptRead]

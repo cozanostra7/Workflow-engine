@@ -45,6 +45,8 @@ def create_workflow(
             position=position,
             input=step.input,
             depends_on=step.depends_on,
+            max_attempts=step.max_attempts,
+            retry_backoff_seconds=step.retry_backoff_seconds,
         )
         for position, step in enumerate(payload.steps)
     ]

@@ -19,10 +19,13 @@ class TaskQueue:
             if "BUSYGROUP" not in str(exc):
                 raise
 
-    def publish(self, task_run_id: UUID) -> str:
-        return self.redis.xadd(STREAM_NAME, {"task_run_id": str(task_run_id)})
+    def publish(self, task_run_id: UUID, attempt: int) -> str:
+        return self.redis.xadd(
+            STREAM_NAME,
+            {"task_run_id": str(task_run_id), "attempt": str(attempt)},
+        )
 
-    def read(self, consumer: str, *, pending: bool = False) -> list[tuple[str, UUID]]:
+    def read(self, consumer: str, *, pending: bool = False) -> list[tuple[str, UUID, int]]:
         entry_id = "0" if pending else ">"
         messages = self.redis.xreadgroup(
             CONSUMER_GROUP,
@@ -31,13 +34,13 @@ class TaskQueue:
             count=1,
             block=1000,
         )
-        parsed: list[tuple[str, UUID]] = []
+        parsed: list[tuple[str, UUID, int]] = []
         for _, entries in messages:
             for message_id, fields in entries:
                 try:
-                    parsed.append((message_id, UUID(fields["task_run_id"])))
-                except (KeyError, ValueError):
-                    parsed.append((message_id, UUID(int=0)))
+                    parsed.append((message_id, UUID(fields["task_run_id"]), int(fields["attempt"])))
+                except (KeyError, ValueError, TypeError):
+                    parsed.append((message_id, UUID(int=0), 0))
         return parsed
 
     def acknowledge(self, message_id: str) -> None:

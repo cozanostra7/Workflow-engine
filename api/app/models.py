@@ -44,6 +44,13 @@ class OutboxStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class AttemptStatus(str, enum.Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    ABANDONED = "abandoned"
+
+
 class Workflow(Base):
     __tablename__ = "workflows"
 
@@ -90,6 +97,8 @@ class WorkflowStep(Base):
     __table_args__ = (
         UniqueConstraint("workflow_version_id", "name", name="uq_workflow_step_name"),
         CheckConstraint("jsonb_typeof(depends_on) = 'array'", name="ck_step_dependencies_array"),
+        CheckConstraint("max_attempts >= 1", name="ck_step_max_attempts_positive"),
+        CheckConstraint("retry_backoff_seconds >= 0", name="ck_step_retry_backoff_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -101,6 +110,8 @@ class WorkflowStep(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     input: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     depends_on: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    retry_backoff_seconds: Mapped[float] = mapped_column(nullable=False, default=0.5)
 
     workflow_version: Mapped[WorkflowVersion] = relationship(back_populates="steps")
     task_runs: Mapped[list["TaskRun"]] = relationship(back_populates="workflow_step")
@@ -153,11 +164,17 @@ class TaskRun(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(100))
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     workflow_run: Mapped[WorkflowRun] = relationship(back_populates="task_runs")
     workflow_step: Mapped[WorkflowStep] = relationship(back_populates="task_runs")
-    outbox_entry: Mapped["TaskOutbox | None"] = relationship(
-        back_populates="task_run", cascade="all, delete-orphan", uselist=False
+    attempts: Mapped[list["TaskAttempt"]] = relationship(
+        back_populates="task_run", cascade="all, delete-orphan", order_by="TaskAttempt.attempt_number"
+    )
+    outbox_entries: Mapped[list["TaskOutbox"]] = relationship(
+        back_populates="task_run", cascade="all, delete-orphan"
     )
 
 
@@ -165,16 +182,45 @@ class TaskOutbox(Base):
     __tablename__ = "task_outbox"
     __table_args__ = (
         CheckConstraint("status IN ('pending','published','cancelled')", name="ck_task_outbox_status"),
+        CheckConstraint("attempt > 0", name="ck_task_outbox_attempt_positive"),
+        UniqueConstraint("task_run_id", "attempt", name="uq_task_outbox_attempt"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     task_run_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("task_runs.id", ondelete="CASCADE"), nullable=False, unique=True
+        Uuid, ForeignKey("task_runs.id", ondelete="CASCADE"), nullable=False
     )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=OutboxStatus.PENDING.value)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    task_run: Mapped[TaskRun] = relationship(back_populates="outbox_entry")
+    task_run: Mapped[TaskRun] = relationship(back_populates="outbox_entries")
+
+
+class TaskAttempt(Base):
+    __tablename__ = "task_attempts"
+    __table_args__ = (
+        UniqueConstraint("task_run_id", "attempt_number", name="uq_task_attempt_number"),
+        CheckConstraint("attempt_number > 0", name="ck_task_attempt_number_positive"),
+        CheckConstraint("status IN ('running','completed','failed','abandoned')", name="ck_task_attempt_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=AttemptStatus.RUNNING.value)
+    worker_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    output: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[dict | None] = mapped_column(JSONB)
+
+    task_run: Mapped[TaskRun] = relationship(back_populates="attempts")

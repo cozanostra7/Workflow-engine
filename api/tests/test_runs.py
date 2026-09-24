@@ -1,4 +1,5 @@
 from uuid import uuid4
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,7 +7,19 @@ from sqlalchemy import delete, select, update
 
 from app.db import SessionLocal
 from app.main import app
-from app.models import TaskRun, Workflow, WorkflowRun, WorkflowStep, WorkflowVersion
+from app.models import (
+    AttemptStatus,
+    OutboxStatus,
+    TaskAttempt,
+    TaskOutbox,
+    TaskRun,
+    TaskStatus,
+    Workflow,
+    WorkflowRun,
+    WorkflowStep,
+    WorkflowVersion,
+)
+from app.services.scheduler import reap_expired_leases
 
 
 def wait_for_terminal_run(client: TestClient, run_id: str) -> dict:
@@ -99,6 +112,91 @@ def test_task_failure_fails_run_and_cancels_dependent_steps(workflow_with_run) -
     assert run["status"] == "failed"
     assert [task["status"] for task in tasks] == ["failed", "cancelled"]
     assert tasks[0]["error"]["message"] == "deliberate test failure"
+
+
+def test_flaky_task_retries_then_unblocks_dependent_step(workflow_with_run) -> None:
+    client, workflow = workflow_with_run
+    with SessionLocal.begin() as session:
+        session.execute(
+            update(WorkflowStep)
+            .where(
+                WorkflowStep.workflow_version_id == workflow["latest_version"]["id"],
+                WorkflowStep.name == "first",
+            )
+            .values(
+                task_type="flaky",
+                input={"failures_before_success": 1},
+                max_attempts=2,
+                retry_backoff_seconds=0.1,
+            )
+        )
+
+    created = client.post(f"/workflows/{workflow['id']}/runs")
+    run = wait_for_terminal_run(client, created.json()["id"])
+    tasks = client.get(f"/runs/{run['id']}/tasks").json()
+
+    assert run["status"] == "completed"
+    assert tasks[0]["attempt"] == 2
+    assert [attempt["status"] for attempt in tasks[0]["attempts"]] == [
+        "failed",
+        "completed",
+    ]
+    assert tasks[0]["output"] == {"succeeded_on_attempt": 2}
+    assert tasks[1]["status"] == "completed"
+
+
+def test_expired_lease_abandons_attempt_and_schedules_retry(workflow_with_run) -> None:
+    _, workflow = workflow_with_run
+    now = datetime.now(UTC)
+    with SessionLocal.begin() as session:
+        step = session.scalar(
+            select(WorkflowStep).where(
+                WorkflowStep.workflow_version_id == workflow["latest_version"]["id"],
+                WorkflowStep.name == "first",
+            )
+        )
+        step.max_attempts = 2
+        step.retry_backoff_seconds = 60
+        run = WorkflowRun(workflow_version_id=workflow["latest_version"]["id"], status="running")
+        task = TaskRun(
+            workflow_step_id=step.id,
+            status=TaskStatus.RUNNING.value,
+            attempt=1,
+            input={},
+            worker_id="worker-that-disappeared",
+            started_at=now - timedelta(seconds=90),
+            last_heartbeat_at=now - timedelta(seconds=60),
+            lease_expires_at=now - timedelta(seconds=30),
+        )
+        task.attempts.append(
+            TaskAttempt(
+                attempt_number=1,
+                status=AttemptStatus.RUNNING.value,
+                worker_id="worker-that-disappeared",
+                started_at=now - timedelta(seconds=90),
+            )
+        )
+        run.task_runs.append(task)
+        session.add(run)
+        session.flush()
+        task_id = task.id
+
+    with SessionLocal() as session:
+        reap_expired_leases(session, now=now)
+
+    with SessionLocal() as session:
+        task = session.get(TaskRun, task_id)
+        assert task is not None
+        assert task.attempts[0].status == AttemptStatus.ABANDONED.value
+        outbox = session.scalar(
+            select(TaskOutbox).where(
+                TaskOutbox.task_run_id == task_id,
+                TaskOutbox.attempt == 2,
+            )
+        )
+        assert outbox is not None
+        assert outbox.status == OutboxStatus.PENDING.value
+        assert outbox.available_at > now
 
 
 def test_starting_unknown_workflow_returns_404(workflow_with_run) -> None:

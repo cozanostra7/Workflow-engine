@@ -48,7 +48,7 @@ def list_task_runs(
     statement = (
         select(TaskRun)
         .where(TaskRun.workflow_run_id == run_id)
-        .options(selectinload(TaskRun.workflow_step))
+        .options(selectinload(TaskRun.workflow_step), selectinload(TaskRun.attempts))
         .order_by(TaskRun.created_at, TaskRun.id)
     )
     task_runs = list(session.scalars(statement))
