@@ -20,6 +20,8 @@ from app.services.task_queue import TaskQueue
 
 def schedule_ready_tasks(session: Session, run: WorkflowRun) -> None:
     """Queue pending tasks only after all named dependencies completed."""
+    now = datetime.now(UTC)
+    dispatch_at = run.scheduled_for if run.scheduled_for and run.scheduled_for > now else now
     task_runs = list(
         session.scalars(
             select(TaskRun)
@@ -37,12 +39,19 @@ def schedule_ready_tasks(session: Session, run: WorkflowRun) -> None:
         ):
             task.status = TaskStatus.QUEUED.value
             session.add(
-                TaskOutbox(task_run_id=task.id, attempt=task.attempt + 1)
+                TaskOutbox(
+                    task_run_id=task.id,
+                    attempt=task.attempt + 1,
+                    available_at=dispatch_at,
+                )
             )
 
-    if run.started_at is None:
-        run.started_at = datetime.now(UTC)
-    run.status = WorkflowStatus.RUNNING.value
+    if dispatch_at > now:
+        run.status = WorkflowStatus.PENDING.value
+    else:
+        if run.started_at is None:
+            run.started_at = now
+        run.status = WorkflowStatus.RUNNING.value
 
 
 def publish_pending_outbox(session: Session, queue: TaskQueue, batch_size: int = 50) -> int:
@@ -89,7 +98,19 @@ def claim_task(
     if task.status != TaskStatus.QUEUED.value or target_attempt != task.attempt + 1:
         return False
 
+    run = session.scalar(
+        select(WorkflowRun).where(WorkflowRun.id == task.workflow_run_id).with_for_update()
+    )
+    if run is None or run.status not in {
+        WorkflowStatus.PENDING.value,
+        WorkflowStatus.RUNNING.value,
+    }:
+        return False
+
     now = datetime.now(UTC)
+    if run.status == WorkflowStatus.PENDING.value:
+        run.status = WorkflowStatus.RUNNING.value
+        run.started_at = now
     task.status = TaskStatus.RUNNING.value
     task.attempt = target_attempt
     task.worker_id = worker_id

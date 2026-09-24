@@ -1,12 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import get_session
 from app.models import TaskRun, WorkflowRun
-from app.schemas import TaskRunRead, WorkflowRunRead
+from app.schemas import TaskRunRead, WorkflowRunRead, WorkflowRunStart
 from app.services.run_service import create_workflow_run
 
 workflow_runs_router = APIRouter(prefix="/workflows", tags=["workflow runs"])
@@ -19,9 +19,18 @@ runs_router = APIRouter(prefix="/runs", tags=["workflow runs"])
     status_code=status.HTTP_201_CREATED,
 )
 def start_workflow_run(
-    workflow_id: UUID, session: Session = Depends(get_session)
+    workflow_id: UUID,
+    payload: WorkflowRunStart = Body(default=WorkflowRunStart()),
+    session: Session = Depends(get_session),
 ) -> WorkflowRun:
-    run = create_workflow_run(session, workflow_id)
+    try:
+        run = create_workflow_run(
+            session,
+            workflow_id,
+            scheduled_for=payload.scheduled_for,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=404, detail="workflow or workflow version not found")
     return run

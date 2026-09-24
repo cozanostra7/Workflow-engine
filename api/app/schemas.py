@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic import AliasPath
 
 
@@ -55,8 +55,22 @@ class WorkflowRunRead(BaseModel):
     workflow_version_id: uuid.UUID
     status: str
     created_at: datetime
+    scheduled_for: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
+
+
+class WorkflowRunStart(BaseModel):
+    scheduled_for: datetime | None = None
+
+    @field_validator("scheduled_for")
+    @classmethod
+    def scheduled_time_must_include_timezone(
+        cls, value: datetime | None
+    ) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("scheduled_for must include a timezone")
+        return value
 
 
 class TaskAttemptRead(BaseModel):
