@@ -2,11 +2,23 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.db import SessionLocal
 from app.main import app
-from app.models import TaskRun, Workflow, WorkflowRun, WorkflowVersion
+from app.models import TaskRun, Workflow, WorkflowRun, WorkflowStep, WorkflowVersion
+
+
+def wait_for_terminal_run(client: TestClient, run_id: str) -> dict:
+    import time
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        run = client.get(f"/runs/{run_id}").json()
+        if run["status"] in {"completed", "failed"}:
+            return run
+        time.sleep(0.05)
+    raise AssertionError(f"run {run_id} did not reach a terminal state")
 
 
 @pytest.fixture
@@ -19,7 +31,7 @@ def workflow_with_run():
                 "name": name,
                 "steps": [
                     {"name": "first", "type": "echo", "input": {"value": 1}},
-                    {"name": "second", "type": "sleep", "depends_on": ["first"]},
+                    {"name": "second", "type": "sleep", "input": {"seconds": 0.01}, "depends_on": ["first"]},
                 ],
             },
         )
@@ -42,26 +54,51 @@ def test_start_run_creates_pending_task_runs_in_step_order(workflow_with_run) ->
 
     assert response.status_code == 201
     run = response.json()
-    assert run["status"] == "pending"
+    assert run["status"] in {"running", "completed"}
     assert run["workflow_version_id"] == workflow["latest_version"]["id"]
+
+    run = wait_for_terminal_run(client, run["id"])
+    assert run["status"] == "completed"
 
     tasks_response = client.get(f"/runs/{run['id']}/tasks")
     assert tasks_response.status_code == 200
     tasks = tasks_response.json()
     assert [task["step_name"] for task in tasks] == ["first", "second"]
-    assert [task["status"] for task in tasks] == ["pending", "pending"]
+    assert [task["status"] for task in tasks] == ["completed", "completed"]
     assert tasks[0]["input"] == {"value": 1}
 
 
 def test_get_run_returns_persisted_run(workflow_with_run) -> None:
     client, workflow = workflow_with_run
     created = client.post(f"/workflows/{workflow['id']}/runs")
+    wait_for_terminal_run(client, created.json()["id"])
 
     response = client.get(f"/runs/{created.json()['id']}")
 
     assert response.status_code == 200
     assert response.json()["id"] == created.json()["id"]
     assert response.json()["workflow_version_id"] == workflow["latest_version"]["id"]
+
+
+def test_task_failure_fails_run_and_cancels_dependent_steps(workflow_with_run) -> None:
+    client, workflow = workflow_with_run
+    with SessionLocal.begin() as session:
+        session.execute(
+            update(WorkflowStep)
+            .where(
+                WorkflowStep.workflow_version_id == workflow["latest_version"]["id"],
+                WorkflowStep.name == "first",
+            )
+            .values(task_type="fail", input={"message": "deliberate test failure"})
+        )
+
+    created = client.post(f"/workflows/{workflow['id']}/runs")
+    run = wait_for_terminal_run(client, created.json()["id"])
+    tasks = client.get(f"/runs/{run['id']}/tasks").json()
+
+    assert run["status"] == "failed"
+    assert [task["status"] for task in tasks] == ["failed", "cancelled"]
+    assert tasks[0]["error"]["message"] == "deliberate test failure"
 
 
 def test_starting_unknown_workflow_returns_404(workflow_with_run) -> None:

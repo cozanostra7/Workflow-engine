@@ -38,6 +38,12 @@ class TaskStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class OutboxStatus(str, enum.Enum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    CANCELLED = "cancelled"
+
+
 class Workflow(Base):
     __tablename__ = "workflows"
 
@@ -150,3 +156,25 @@ class TaskRun(Base):
 
     workflow_run: Mapped[WorkflowRun] = relationship(back_populates="task_runs")
     workflow_step: Mapped[WorkflowStep] = relationship(back_populates="task_runs")
+    outbox_entry: Mapped["TaskOutbox | None"] = relationship(
+        back_populates="task_run", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class TaskOutbox(Base):
+    __tablename__ = "task_outbox"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','published','cancelled')", name="ck_task_outbox_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=OutboxStatus.PENDING.value)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    task_run: Mapped[TaskRun] = relationship(back_populates="outbox_entry")

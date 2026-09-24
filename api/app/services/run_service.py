@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import TaskRun, Workflow, WorkflowRun, WorkflowVersion
+from app.services.scheduler import schedule_ready_tasks
 
 
 def create_workflow_run(session: Session, workflow_id: UUID) -> WorkflowRun | None:
@@ -31,6 +32,8 @@ def create_workflow_run(session: Session, workflow_id: UUID) -> WorkflowRun | No
         for step in sorted(definition.steps, key=lambda item: item.position)
     ]
     session.add(run)
+    session.flush()
+    schedule_ready_tasks(session, run)
     session.commit()
     session.refresh(run)
     return run
